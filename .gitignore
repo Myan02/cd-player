@@ -1,0 +1,21 @@
+# virtual environments
+venv
+.venv
+/venv
+
+# chassis models
+chassis
+.chassis
+/chassis
+
+# pycache
+__pycache__
+.__pycache__
+/__pycache__
+pycache
+.pycache
+/__pycache__
+
+
+
+

@@ -1,47 +1,67 @@
-import cdio, vlc
+import cdio, pycdio, vlc
 import os, fcntl
 
 """
 Handle all operations related to the CD-ROM Drive
 """
 class Drive():
-    name = "/dev/cdrom"
 
     # initialize device
     def __init__(self):
         self.device = None
-        self.player = None
+        self.device_path = ""
+        self.device_type = ""
 
-        self.drive_type = ""
+        self.media_list = None
+        self.list_player = None
+
         self.status = ""
 
         self.track = None
         self.total_tracks = None
 
-        self.initCDPlayer(drive_type="cdda")
+        self.initCDPlayer(device_type="cdda")
     
     # set device and player api
-    def initCDPlayer(self, drive_type: str = "cdda") -> None:
+    def initCDPlayer(self, device_type: str = "cdda") -> None:
         try:
-            # set optical device using source name
-            self.device = cdio.Device(Drive.name)
-            self.drive_type = drive_type
+            # set optical device based on unknown driver name
+            self.device = cdio.Device(driver_id=pycdio.DRIVER_UNKNOWN)
+
+            self.device_path = self.device.get_device()
+            self.device_type = device_type
 
         except IOError as e:
             self.device = None
-            self.player = None
+            self.device_type = ""
+            self.device_path = ""
+
+            self.media_list = None
+            self.list_player = None
+
             print(f"error setting up device: {e}")
             return
 
         try:
-            # set vlc player media using dir path
-            player_path = f"{drive_type}://{Drive.name}"
-            self.player = vlc.MediaPlayer(player_path)
+            instance = vlc.Instance()
+
+            # initialize media list (list of all tracks from cd)
+            media = instance.media_new(f"{self.device_type}://{self.device_path}")
+            self.media_list = instance.media_list_new([media])
+
+            # configure list player (player that manages the track list)
+            self.list_player = instance.media_list_player_new()
+            self.list_player.set_media_list(self.media_list)      
 
         except Exception as e:
             self.device = None
-            self.player = None
-            print(f"error setting up player: {e}")
+            self.device_type = ""
+            self.device_path = ""
+
+            self.media_list = None
+            self.list_player = None
+
+            print(f"error setting up list player: {e}")
             return
       
     # get current tray state
@@ -49,14 +69,14 @@ class Drive():
         DRIVE_STATUS_CODE = 0x5326
 
         # return error if device isn't initialized; can't get tray status of an unknown drive
-        if not self.device or not self.player:
+        if not self.device or not self.list_player:
             print("can't retrieve tray status, no device initialized...")
             self.status = ""
             return 
 
         try:
             # open the cd-rom in read only mode, return file descriptor
-            fd = os.open(Drive.name, os.O_RDONLY | os.O_NONBLOCK)
+            fd = os.open(self.device_path, os.O_RDONLY | os.O_NONBLOCK)
 
             status = fcntl.ioctl(fd, DRIVE_STATUS_CODE) # sys call to get tray status
             os.close(fd)
@@ -100,7 +120,7 @@ class Drive():
             
             case "no disk" | "disk ok":
                 try:
-                    self.player.stop()  # stop all media before ejecting
+                    self.list_player.stop()  # stop all media before ejecting
 
                     print("ejecting device...")
                     self.device.eject_media()   # eject media
@@ -112,7 +132,7 @@ class Drive():
                     print("something went wrong with the eject routine...")
                 finally:
                     # reinitialize media player after attempted ejection
-                    self.initCDPlayer(self.drive_type) 
+                    self.initCDPlayer(self.device_type) 
 
             case _:
                 print("cannot eject disk, no such device found")
@@ -133,14 +153,13 @@ class Drive():
                 print("insert a disk to play media...")
 
             case "disk ok":
-                if self.player.is_playing():
-                    self.player.pause()
+                if self.list_player.is_playing():
+                    self.list_player.pause()
                     print("media paused")
+
                 else:
-                    self.player.play()
-                    self.track = self.player.audio_get_track()                  # current track
-                    self.total_tracks = self.player.audio_get_track_count()     # number of tracks on disk
-                    print("media playing")
+                    self.list_player.play()
+                    print(f"media playing")
 
             case _:
                 print("cannot play media, no device found")
@@ -161,8 +180,7 @@ class Drive():
                 print("insert a disk to play media...")
 
             case "disk ok":
-                self.track = min(self.total_tracks, self.track + 1)
-                self.player.audio_set_track(self.track)
+                self.list_player.next()
                 print(f"now playing track {self.track}")
 
             case _:
@@ -184,13 +202,14 @@ class Drive():
                 print("insert a disk to play media...")
 
             case "disk ok":
-                if not self.player.is_playing():
-                    self.player.audio_set_track(self.track)
+                if not self.list_player.is_playing():
+                    # self.player.audio_set_track(self.track)
                     print(f"replaying track {self.track}")
                     return
             
-                self.track = max(0, self.track - 1)
-                self.player.audio_set_track(self.track)
+                # self.track = max(0, self.track - 1)
+                # self.player.audio_set_track(self.track)
+                self.list_player.previous()
                 print(f"now playing track {self.track}")
 
             case _:
@@ -199,23 +218,23 @@ class Drive():
     # increase player volume
     def volumeUp(self) -> None:
         max_volume = 100
-        inc_volume = self.player.audio_get_volume() + 10
+        inc_volume = self.list_player.get_media_player().audio_get_volume() + 10
 
-        self.player.audio_set_volume(min(max_volume, inc_volume))
+        self.list_player.get_media_player().audio_set_volume(min(max_volume, inc_volume))
     
     # decrease player volume
     def volumeDown(self) -> None:
         min_volume = 0
-        dec_volume = self.player.audio_get_volume() - 10
+        dec_volume = self.list_player.get_media_player().audio_get_volume() - 10
 
-        self.player.audio_set_volume(max(min_volume, dec_volume))
+        self.list_player.get_media_player().audio_set_volume(max(min_volume, dec_volume))
 
     # change from dvd to cd type and vise-versa
-    def changeDriveType(self, drive_type) -> None:
+    def changeDriveType(self, device_type) -> None:
         
         # exit if same drive type
-        if drive_type == self.drive_type:
-            print(f"drive aready in {drive_type} mode, returning...")
+        if device_type == self.device_type:
+            print(f"drive aready in {device_type} mode, returning...")
             return
 
         self.getTrayStatus()
@@ -226,10 +245,10 @@ class Drive():
                 print("please wait...")
 
             case "tray open" | "no disk":
-                self.initCDPlayer(drive_type)
-                self.drive_type = drive_type
+                self.initCDPlayer(device_type)
+                self.device_type = device_type
 
-                print(f"drive is now in {drive_type} mode")
+                print(f"drive is now in {device_type} mode")
             
             case _:
                 print("cannot change media, no device found")
@@ -274,6 +293,12 @@ def testDrive():
             
             case "d":
                 new_drive.volumeDown()
+            
+            case "n":
+                new_drive.skipTrack()
+            
+            case "b":
+                new_drive.prevTrack()
             
             case "c":
                 print("what would you like to change the drive type to?")
